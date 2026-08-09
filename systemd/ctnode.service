@@ -1,0 +1,40 @@
+[Unit]
+Description=Certim Node Agent
+Documentation=https://github.com/3kk0/certim
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ctnode run --config /etc/ctnode/config.yaml
+Restart=on-failure
+RestartSec=10s
+
+# 安全和隔离
+User=ctnode
+Group=ctnode
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/ctnode /etc/certim/certificates
+ReadOnlyPaths=/etc/ctnode/config.yaml
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ctnode
+
+[Install]
+WantedBy=multi-user.target

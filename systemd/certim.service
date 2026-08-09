@@ -1,0 +1,45 @@
+[Unit]
+Description=Certim TLS Certificate Manager
+Documentation=https://github.com/3kk0/certim
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/certim serve /etc/certim/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+
+# 运行时目录权限
+RuntimeDirectory=certim
+RuntimeDirectoryMode=0755
+
+# 安全和隔离
+User=certim
+Group=certim
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/certim /etc/certim/.credentials
+ReadOnlyPaths=/etc/certim/config.yaml
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=certim
+
+[Install]
+WantedBy=multi-user.target

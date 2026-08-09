@@ -1,0 +1,15 @@
+# Editor / OS
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Temporary files
+*.tmp
+*.bak
