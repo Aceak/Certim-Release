@@ -54,7 +54,7 @@ sudo cp bin/ctnode-linux-amd64 /usr/local/bin/ctnode
 sudo chmod 0755 /usr/local/bin/ctnode
 
 # 配置
-sudo mkdir -p /etc/ctnode /var/lib/ctnode
+sudo mkdir -p /etc/ctnode /var/lib/ctnode /etc/certim/certificates
 sudo cp configs/ctnode.example.yaml /etc/ctnode/config.yaml
 # 编辑 /etc/ctnode/config.yaml 填写 Server URL 和身份密钥路径
 
@@ -69,6 +69,22 @@ ctnode status --config /etc/ctnode/config.yaml
 ```
 
 ### 一键安装
+
+#### 在线安装
+
+```bash
+# 直连官方 GitHub
+curl -fsSL https://raw.githubusercontent.com/Aceak/Certim-Release/main/install.sh \
+  | sudo bash -s -- certim
+
+# 国内网络使用镜像站（脚本与二进制均走 https://ghfast.top）
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/Aceak/Certim-Release/main/install.sh \
+  | sudo bash -s -- certim --mirror
+```
+
+`certim` 可替换为 `ctnode` 或 `all`。
+
+#### 本地脚本安装
 
 ```bash
 # 安装 certim
