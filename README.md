@@ -1,29 +1,34 @@
 # Certim Release
 
-Certim 生产部署资源仓库。提供预编译二进制、systemd 单元、配置示例和安装脚本，
-让生产节点快速搭建 Certim 服务端和 ctnode Agent。
+Certim 生产部署资源仓库。预编译二进制通过 GitHub Releases 发布，本仓库提供
+systemd 单元、配置示例、Nginx 反代示例和安装脚本，让生产节点快速搭建
+Certim 服务端和 ctnode Agent。
 
 ## 仓库内容
 
 ```text
 Release/
 ├── README.md                        # 本文件
-├── install.sh                       # 一键安装脚本
+├── install.sh                       # 一键安装/卸载脚本
 ├── configs/
 │   ├── certim.example.yaml          # certim 服务端配置示例
 │   └── ctnode.example.yaml          # ctnode Agent 配置示例
 ├── systemd/
 │   ├── certim.service               # certim 服务端 systemd 单元
 │   └── ctnode.service               # ctnode Agent systemd 单元
-└── bin/                             # 发布二进制（由 CI 产出）
+└── nginx/
+    └── nginx-certim.example.conf    # Agent API 反向代理示例
 ```
+
+发布二进制通过 [GitHub Releases](../../releases) 提供，下载后放入本仓库的 `bin/`
+目录即可配合 `install.sh` 使用。
 
 ## 快速安装
 
 ### 证书管理节点（运行 certim serve）
 
 ```bash
-# 下载二进制
+# 从 GitHub Releases 下载二进制到 bin/（手动安装时使用）
 sudo cp bin/certim-linux-amd64 /usr/local/bin/certim
 sudo chmod 0755 /usr/local/bin/certim
 
@@ -44,7 +49,7 @@ certim status
 ### 业务节点（运行 ctnode）
 
 ```bash
-# 下载二进制
+# 从 GitHub Releases 下载二进制到 bin/（手动安装时使用）
 sudo cp bin/ctnode-linux-amd64 /usr/local/bin/ctnode
 sudo chmod 0755 /usr/local/bin/ctnode
 
@@ -76,7 +81,35 @@ sudo ./install.sh ctnode
 sudo ./install.sh all
 ```
 
-安装脚本使用当前系统架构自动选择对应二进制。
+安装脚本自动从 GitHub Releases 下载对应架构的二进制，校验 SHA-256 后安装
+到 `/usr/local/bin`，并复制配置示例和 systemd 单元。
+
+下载默认直连官方 GitHub，可选参数：
+
+```bash
+# 指定发布版本（默认 latest）
+sudo ./install.sh all --version v1.2.3
+
+# 启用默认镜像 https://ghfast.top 加速
+sudo ./install.sh certim --mirror
+
+# 使用自定义镜像前缀
+sudo ./install.sh certim --mirror https://mirror.example.com
+```
+
+如镜像不可用，更换 `--mirror` 的值重试即可。手动下载方式见上文"快速安装"。
+
+### 卸载
+
+```bash
+# 卸载本机已安装的组件（自动检测 certim 或 ctnode）
+sudo ./install.sh uninstall
+
+# 同时清除数据与配置目录（/var/lib/*、/etc/certim、/etc/ctnode 等）
+sudo ./install.sh uninstall --purge
+```
+
+不带 `--purge` 时保留数据与配置目录，便于重装后继续使用。
 
 ## 配置说明
 
@@ -135,40 +168,49 @@ journalctl -u ctnode -f
 
 两个服务均配置为崩溃后自动重启（`Restart=on-failure`），并依赖 `network-online.target`。
 
+## Agent API 反向代理
+
+生产环境建议在 HTTPS 反向代理后暴露 Agent API，参考
+[nginx/nginx-certim.example.conf](nginx/nginx-certim.example.conf)。
+反向代理必须把 `X-Forwarded-For` 覆盖为单个客户端 IP——逗号分隔的转发链会被
+拒绝并回退到 TCP 对端地址。OSS 预签名 URL 由 Agent 直接访问阿里云 OSS，
+不经过代理。
+
 ## 目录权限
 
 | 路径 | 权限 | 说明 |
 |------|------|------|
 | `/etc/certim/` | `0755` | certim 配置目录 |
 | `/etc/certim/.credentials/` | `0700` | Profile 凭据目录 |
-| `/var/lib/certim/` | `0750` | certim 数据目录 |
-| `/run/certim/` | `0755` | Unix Socket 目录（tmpfs） |
+| `/var/lib/certim/` | `0755` | certim 数据目录（systemd StateDirectory 创建） |
+| `/run/certim/` | `0750` | Unix Socket 目录（tmpfs） |
 | `/etc/ctnode/` | `0755` | ctnode 配置目录 |
-| `/var/lib/ctnode/` | `0750` | ctnode 身份密钥目录 |
+| `/var/lib/ctnode/` | `0755` | ctnode 身份密钥目录（systemd StateDirectory 创建） |
 | `/etc/certim/certificates/` | `0755` | ctnode 证书部署目录 |
 
 ## 多架构二进制
 
 | 二进制 | 平台 |
 |--------|------|
-| `certim-linux-amd64` | Linux x86_64（CGO 依赖） |
-| `certim-linux-arm64` | Linux ARM64（CGO 依赖） |
-| `ctnode-linux-amd64` | Linux x86_64（纯 Go） |
-| `ctnode-linux-arm64` | Linux ARM64（纯 Go） |
-| `ctnode-darwin-amd64` | macOS x86_64（纯 Go） |
-| `ctnode-darwin-arm64` | macOS ARM64（纯 Go） |
-| `ctnode-windows-amd64.exe` | Windows x86_64（纯 Go） |
-| `ctnode-windows-arm64.exe` | Windows ARM64（纯 Go） |
+| `certim-linux-amd64` | Linux x86_64 |
+| `certim-linux-arm64` | Linux ARM64 |
+| `ctnode-linux-amd64` | Linux x86_64 |
+| `ctnode-linux-arm64` | Linux ARM64 |
+| `ctnode-darwin-amd64` | macOS x86_64 |
+| `ctnode-darwin-arm64` | macOS ARM64 |
+| `ctnode-windows-amd64.exe` | Windows x86_64 |
+| `ctnode-windows-arm64.exe` | Windows ARM64 |
 
-certim 服务端仅发布 Linux 平台（依赖 CGO + SQLite）。ctnode Agent 为纯 Go，
-支持 Linux、macOS 和 Windows。
+`certim` 使用纯 Go 的 `modernc.org/sqlite` 驱动，与 `ctnode` 一样无需 CGO。
+certim 服务端仅发布 Linux 平台，ctnode Agent 支持 Linux、macOS 和 Windows。
 
 ## 版本校验
 
-每个发布版本附带 `checksums.txt`：
+每个发布版本附带 `checksums.txt`。将下载的二进制放入 `bin/`、校验文件放到仓库
+根目录后执行：
 
 ```bash
-sha256sum -c dist/checksums.txt
+cd bin && sha256sum -c ../checksums.txt
 ```
 
 ## 安全要求
@@ -181,6 +223,6 @@ sha256sum -c dist/checksums.txt
 
 ## 相关资源
 
-- [Certim 主仓库](https://github.com/3kk0/certim) — 完整文档、设计说明和源码。
+- [Certim 主仓库](https://github.com/Aceak/Certim) — 完整文档、设计说明和源码。
 - [Let's Encrypt](https://letsencrypt.org/) — 免费 TLS 证书 CA。
 - [RFC 8555](https://datatracker.ietf.org/doc/html/rfc8555) — ACME 协议规范。

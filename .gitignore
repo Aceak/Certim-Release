@@ -13,3 +13,7 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.bak
+
+# Release binaries downloaded from GitHub Releases
+bin/
+checksums.txt

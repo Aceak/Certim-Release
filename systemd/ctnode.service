@@ -1,35 +1,46 @@
+# Certim 节点 Agent systemd 单元（示例）。
+#
+# 安装：
+#   sudo install -m 0644 systemd/ctnode.service /etc/systemd/system/ctnode.service
+#   sudo systemctl daemon-reload
+#   sudo ctnode enroll --token ctm_enroll_xxx --config /etc/ctnode/config.yaml
+#   sudo systemctl enable --now ctnode
+#
+# 单元创建并管理 /var/lib/ctnode（StateDirectory），其中保存 Ed25519 身份
+# 密钥和本地 Agent 状态。已部署证书写入 /etc/certim/certificates
+# （下方 ReadWritePaths）。
+
 [Unit]
-Description=Certim Node Agent
-Documentation=https://github.com/3kk0/certim
+Description=Certim node certificate agent
+Documentation=https://github.com/Aceak/Certim
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+# 按实际安装路径调整。
 ExecStart=/usr/local/bin/ctnode run --config /etc/ctnode/config.yaml
 Restart=on-failure
-RestartSec=10s
+RestartSec=30
 
-# 安全和隔离
-User=ctnode
-Group=ctnode
-NoNewPrivileges=yes
+# reload Hook（示例配置中的 systemctl reload nginx）需要 root 权限。
+User=root
+Group=root
+
+StateDirectory=ctnode
+ReadWritePaths=/etc/certim/certificates
+
+# 安全加固。仅当特定部署需要时才放宽。
+NoNewPrivileges=true
+PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=/var/lib/ctnode /etc/certim/certificates
-ReadOnlyPaths=/etc/ctnode/config.yaml
-PrivateTmp=yes
-PrivateDevices=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-RestrictRealtime=yes
-RestrictNamespaces=yes
-LockPersonality=yes
-MemoryDenyWriteExecute=yes
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
 
 # 日志
 StandardOutput=journal

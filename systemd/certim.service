@@ -1,40 +1,47 @@
+# Certim 服务端 systemd 单元（示例）。
+#
+# 安装：
+#   sudo install -m 0644 systemd/certim.service /etc/systemd/system/certim.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now certim
+#
+# 单元创建并管理 /run/certim（RuntimeDirectory）和 /var/lib/certim
+# （StateDirectory）。YAML 配置位于 /etc/certim/config.yaml；该文件缺失时，
+# certim serve 会在首次启动时生成一份带完整说明的模板。
+
 [Unit]
-Description=Certim TLS Certificate Manager
-Documentation=https://github.com/3kk0/certim
+Description=Certim TLS certificate management server
+Documentation=https://github.com/Aceak/Certim
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+# 按实际安装路径调整。
 ExecStart=/usr/local/bin/certim serve /etc/certim/config.yaml
-ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
-RestartSec=5s
+RestartSec=5
 
-# 运行时目录权限
+User=root
+Group=root
+
+# 服务端写入 SQLite、不可变证书发布和 .credentials，其余保持只读。
+StateDirectory=certim
 RuntimeDirectory=certim
-RuntimeDirectoryMode=0755
+RuntimeDirectoryMode=0750
+ReadWritePaths=/etc/certim
 
-# 安全和隔离
-User=certim
-Group=certim
-NoNewPrivileges=yes
+# 安全加固。仅当特定部署需要时才放宽。
+NoNewPrivileges=true
+PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=/var/lib/certim /etc/certim/.credentials
-ReadOnlyPaths=/etc/certim/config.yaml
-PrivateTmp=yes
-PrivateDevices=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-RestrictRealtime=yes
-RestrictNamespaces=yes
-LockPersonality=yes
-MemoryDenyWriteExecute=no
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
 
 # 日志
 StandardOutput=journal
