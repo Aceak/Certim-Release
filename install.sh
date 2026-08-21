@@ -198,11 +198,13 @@ download_binary() {
     fi
 
     log "verifying SHA-256"
-    # 校验结果输出到 stderr，避免污染调用方的命令替换
-    if ! (cd "${TMP_DIR}" && grep " ${file}$" checksums.txt | sha256sum -c - >&2); then
+    # --quiet：成功无输出，失败时 sha256sum 自行打印详情
+    if ! (cd "${TMP_DIR}" && grep " ${file}$" checksums.txt | sha256sum -c --quiet -); then
         err "checksum mismatch: ${file}, the mirror source may not be trustworthy"
     fi
 
+    # curl/wget 下载的文件不带执行权限，先 chmod 再执行校验
+    chmod 0755 "${TMP_DIR}/${file}"
     log "verifying binary"
     if ! "${TMP_DIR}/${file}" version >/dev/null 2>&1; then
         err "binary cannot execute: ${file}, download may be corrupted or incompatible"
