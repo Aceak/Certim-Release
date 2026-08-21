@@ -15,49 +15,57 @@ log()  { echo -e "${GREEN}[+]${NC} $*" >&2; }
 warn() { echo -e "${YELLOW}[!]${NC} $*" >&2; }
 err()  { echo -e "${RED}[-]${NC} $*" >&2; exit 1; }
 
+# 管道执行（curl | bash）时 $0 是 bash，usage 中显示 install.sh
+SCRIPT_NAME="$(basename "${0}")"
+[[ "${SCRIPT_NAME}" == "bash" ]] && SCRIPT_NAME="install.sh"
+
 usage() {
     cat <<EOF
 Usage:
-  $0 certim|ctnode|all [--version v1.2.3] [--mirror [URL]]
-  $0 uninstall [--purge]
+  ${SCRIPT_NAME} certim|ctnode [--mirror [URL]]
+  ${SCRIPT_NAME} uninstall
+  ${SCRIPT_NAME} purge
 
 Components:
   certim       - install the certim server
   ctnode       - install the ctnode agent
-  all          - install both
 
 Uninstall:
   uninstall    - remove installed components (auto-detected)
-  --purge      - also remove data and config directories
+  purge        - uninstall and also remove data and config directories
 
 Options:
-  --version    - release version, default latest
   --mirror     - enable mirror https://ghfast.top (default: official GitHub)
   --mirror URL - custom mirror prefix
   -h, --help   - show this help
 
 Online install:
   curl -fsSL https://raw.githubusercontent.com/Aceak/Certim-Release/main/install.sh \\
-    | sudo bash -s -- certim [--mirror]
+    | sudo bash -s -- certim|ctnode [--mirror]
 EOF
 }
 
 RELEASE_REPO="Aceak/Certim-Release"
-VERSION="latest"
-MIRROR=""     # 空 = 直连官方 GitHub
-PURGE=0       # uninstall 时是否同时清除数据与配置目录
+VERSION="latest"   # 固定安装最新发布版本
+MIRROR=""          # 空 = 直连官方 GitHub
+PURGE=0            # 卸载时是否同时清除数据与配置目录
 
 COMPONENT="${1:-}"
 if [[ "${COMPONENT}" == "-h" || "${COMPONENT}" == "--help" ]]; then
     usage
     exit 0
 fi
+# purge 命令等价于 uninstall 并清除数据与配置
+if [[ "${COMPONENT}" == "purge" ]]; then
+    COMPONENT="uninstall"
+    PURGE=1
+fi
 if [[ $# -gt 0 ]]; then
     shift
 fi
 
 if [[ $EUID -ne 0 ]]; then
-    err "must run as root: sudo ./install.sh certim|ctnode|all [--version v1.2.3] [--mirror [URL]]"
+    err "must run as root: sudo ${SCRIPT_NAME} certim|ctnode [--mirror [URL]]"
 fi
 
 while [[ $# -gt 0 ]]; do
@@ -66,24 +74,15 @@ while [[ $# -gt 0 ]]; do
             usage
             exit 0
             ;;
-        --version)
-            [[ $# -ge 2 ]] || err "--version requires a value, e.g. --version v1.2.3"
-            [[ -n "$2" ]] || err "--version value cannot be empty"
-            VERSION="$2"
-            shift 2
-            ;;
         --mirror)
             shift
             if [[ $# -ge 1 && -n "$1" && "$1" != -* ]]; then
+                [[ "$1" =~ ^https?:// ]] || err "mirror must start with http:// or https://"
                 MIRROR="$1"
                 shift
             else
                 MIRROR="https://ghfast.top"
             fi
-            ;;
-        --purge)
-            PURGE=1
-            shift
             ;;
         *)
             err "unknown option: $1"
@@ -226,172 +225,137 @@ install_unit() {
     log "systemd unit → /etc/systemd/system/${name}.service"
 }
 
-install_certim() {
-    log "installing certim server..."
-
-    ensure_assets
-
+# 安装组件：下载并校验二进制，复制配置示例、组件目录和 systemd 单元
+install_component() {
+    local name="$1"
+    local config_hint=" to adjust defaults"
     local bin_path
-    bin_path="$(download_binary certim)"
 
-    install -v -m 0755 "${bin_path}" /usr/local/bin/certim
-    log "certim → /usr/local/bin/certim"
+    [[ "${name}" == "ctnode" ]] && config_hint=" and set server.url"
+
+    log "installing ${name}..."
+    ensure_assets
+    bin_path="$(download_binary "${name}")"
+
+    install -v -m 0755 "${bin_path}" "/usr/local/bin/${name}"
+    log "${name} → /usr/local/bin/${name}"
 
     # 配置（已存在则跳过，保留用户配置）
-    if [[ ! -f /etc/certim/config.yaml ]]; then
-        mkdir -p /etc/certim
-        cp "${CONFIG_DIR}/certim.example.yaml" /etc/certim/config.yaml
-        log "config → /etc/certim/config.yaml"
-        warn "edit /etc/certim/config.yaml to adjust defaults"
+    if [[ ! -f "/etc/${name}/config.yaml" ]]; then
+        mkdir -p "/etc/${name}"
+        cp "${CONFIG_DIR}/${name}.example.yaml" "/etc/${name}/config.yaml"
+        log "config → /etc/${name}/config.yaml"
+        warn "edit /etc/${name}/config.yaml${config_hint}"
     else
-        warn "/etc/certim/config.yaml exists, skipping"
+        warn "/etc/${name}/config.yaml exists, skipping"
     fi
-
-    # 凭据目录（0700，存放 ACME 账户密钥与 DNS 凭据）
-    mkdir -p /etc/certim/.credentials
-    chmod 0700 /etc/certim/.credentials
-    log "credentials dir → /etc/certim/.credentials (0700)"
 
     # 数据目录（systemd StateDirectory 也会自动创建）
-    mkdir -p /var/lib/certim
-    log "data dir → /var/lib/certim"
+    mkdir -p "/var/lib/${name}"
+    log "data dir → /var/lib/${name}"
 
-    install_unit certim
+    case "${name}" in
+        certim)
+            # 凭据目录（0700，存放 ACME 账户密钥与 DNS 凭据）
+            mkdir -p /etc/certim/.credentials
+            chmod 0700 /etc/certim/.credentials
+            log "credentials dir → /etc/certim/.credentials (0700)"
+            ;;
+        ctnode)
+            # 证书部署目录（<storage.root>/<certificate-name>/ 落盘位置）
+            mkdir -p /etc/certim/certificates
+            log "certificate dir → /etc/certim/certificates"
+            ;;
+    esac
 
-    echo ""
-    log "certim installed. Start the service:"
-    echo "  sudo systemctl enable --now certim"
-    echo "  certim status"
-}
-
-install_ctnode() {
-    log "installing ctnode agent..."
-
-    ensure_assets
-
-    local bin_path
-    bin_path="$(download_binary ctnode)"
-
-    install -v -m 0755 "${bin_path}" /usr/local/bin/ctnode
-    log "ctnode → /usr/local/bin/ctnode"
-
-    # 配置（已存在则跳过，保留用户配置）
-    if [[ ! -f /etc/ctnode/config.yaml ]]; then
-        mkdir -p /etc/ctnode
-        cp "${CONFIG_DIR}/ctnode.example.yaml" /etc/ctnode/config.yaml
-        log "config → /etc/ctnode/config.yaml"
-        warn "edit /etc/ctnode/config.yaml and set server.url"
-    else
-        warn "/etc/ctnode/config.yaml exists, skipping"
-    fi
-
-    # 数据目录（systemd StateDirectory 也会自动创建，保存身份密钥与本地状态）
-    mkdir -p /var/lib/ctnode
-    log "data dir → /var/lib/ctnode"
-
-    # 证书部署目录（<storage.root>/<certificate-name>/ 落盘位置）
-    mkdir -p /etc/certim/certificates
-    log "certificate dir → /etc/certim/certificates"
-
-    install_unit ctnode
+    install_unit "${name}"
 
     echo ""
-    log "ctnode installed. Enroll and start:"
-    echo "  sudo ctnode enroll --token ctm_enroll_xxx --config /etc/ctnode/config.yaml"
-    echo "  sudo systemctl enable --now ctnode"
-    echo "  ctnode status --config /etc/ctnode/config.yaml"
+    case "${name}" in
+        certim)
+            log "certim installed. Start the service:"
+            echo "  sudo systemctl enable --now certim"
+            echo "  certim status"
+            ;;
+        ctnode)
+            log "ctnode installed. Enroll and start:"
+            echo "  sudo ctnode enroll --token ctm_enroll_xxx --config /etc/ctnode/config.yaml"
+            echo "  sudo systemctl enable --now ctnode"
+            echo "  ctnode status --config /etc/ctnode/config.yaml"
+            ;;
+    esac
 }
 
-uninstall_certim() {
-    log "uninstalling certim server..."
+# 卸载组件：停止服务并移除二进制与 systemd 单元；purge 时清除数据、配置
+# 和早期版本创建的系统用户
+uninstall_component() {
+    local name="$1"
+    local -a purge_dirs=("/var/lib/${name}" "/etc/${name}")
 
-    # 停止并禁用服务后移除单元
-    if systemctl is-active certim &>/dev/null 2>&1; then
-        systemctl stop certim || true
-        log "stopped certim service"
+    [[ "${name}" == "ctnode" ]] && purge_dirs+=("/etc/certim/certificates")
+
+    log "uninstalling ${name}..."
+
+    if systemctl is-active "${name}" &>/dev/null 2>&1; then
+        systemctl stop "${name}" || true
+        log "stopped ${name} service"
     fi
-    if systemctl is-enabled certim &>/dev/null 2>&1; then
-        systemctl disable certim || true
-        log "disabled certim service"
+    if systemctl is-enabled "${name}" &>/dev/null 2>&1; then
+        systemctl disable "${name}" || true
+        log "disabled ${name} service"
     fi
-    rm -f /etc/systemd/system/certim.service
+    rm -f "/etc/systemd/system/${name}.service"
     if command -v systemctl &>/dev/null; then
         systemctl daemon-reload || true
     fi
     log "removed systemd unit"
 
-    rm -f /usr/local/bin/certim
-    log "removed /usr/local/bin/certim"
+    rm -f "/usr/local/bin/${name}"
+    log "removed /usr/local/bin/${name}"
 
-    rm -rf /run/certim
-    log "removed runtime dir /run/certim"
+    # certim 的运行目录（tmpfs）随卸载清除
+    if [[ "${name}" == "certim" ]]; then
+        rm -rf /run/certim
+        log "removed runtime dir /run/certim"
+    fi
 
-    # 默认保留数据与配置，--purge 时一并清除
     if [[ "${PURGE}" -eq 1 ]]; then
-        rm -rf /var/lib/certim /etc/certim
-        log "purged data dir /var/lib/certim and config dir /etc/certim"
+        rm -rf "${purge_dirs[@]}"
+        log "purged ${purge_dirs[*]}"
+        if id "${name}" &>/dev/null 2>&1; then
+            userdel "${name}" 2>/dev/null || warn "failed to remove legacy user ${name}"
+            log "removed legacy user ${name}"
+        fi
     else
-        warn "keeping data dir /var/lib/certim and config dir /etc/certim"
-        warn "to remove them too, run: $0 uninstall --purge"
-    fi
-}
-
-uninstall_ctnode() {
-    log "uninstalling ctnode agent..."
-
-    # 停止并禁用服务后移除单元
-    if systemctl is-active ctnode &>/dev/null 2>&1; then
-        systemctl stop ctnode || true
-        log "stopped ctnode service"
-    fi
-    if systemctl is-enabled ctnode &>/dev/null 2>&1; then
-        systemctl disable ctnode || true
-        log "disabled ctnode service"
-    fi
-    rm -f /etc/systemd/system/ctnode.service
-    if command -v systemctl &>/dev/null; then
-        systemctl daemon-reload || true
-    fi
-    log "removed systemd unit"
-
-    rm -f /usr/local/bin/ctnode
-    log "removed /usr/local/bin/ctnode"
-
-    # 默认保留数据、配置与已部署证书，--purge 时一并清除
-    if [[ "${PURGE}" -eq 1 ]]; then
-        rm -rf /var/lib/ctnode /etc/ctnode /etc/certim/certificates
-        log "purged data dir /var/lib/ctnode, config dir /etc/ctnode and certificate dir /etc/certim/certificates"
-    else
-        warn "keeping data dir /var/lib/ctnode, config dir /etc/ctnode and certificate dir /etc/certim/certificates"
-        warn "to remove them too, run: $0 uninstall --purge"
+        warn "keeping ${purge_dirs[*]}"
+        warn "to remove them too, run: ${SCRIPT_NAME} purge"
     fi
 }
 
 case "${COMPONENT}" in
-    certim)
-        install_certim
-        ;;
-    ctnode)
-        install_ctnode
-        ;;
-    all)
-        install_certim
-        echo ""
-        install_ctnode
+    certim|ctnode)
+        install_component "${COMPONENT}"
         ;;
     uninstall)
-        found=0
-        for component in certim ctnode; do
-            if [[ -f "/usr/local/bin/${component}" ]]; then
-                if [[ "${found}" -eq 1 ]]; then
-                    echo ""
+        if [[ "${PURGE}" -eq 1 ]]; then
+            # 无条件深度清理，覆盖早期版本的部分残留
+            uninstall_component certim
+            echo ""
+            uninstall_component ctnode
+        else
+            found=0
+            for component in certim ctnode; do
+                if [[ -f "/usr/local/bin/${component}" ]]; then
+                    if [[ "${found}" -eq 1 ]]; then
+                        echo ""
+                    fi
+                    uninstall_component "${component}"
+                    found=1
                 fi
-                "uninstall_${component}"
-                found=1
+            done
+            if [[ "${found}" -eq 0 ]]; then
+                warn "no installation found: no certim or ctnode in /usr/local/bin"
             fi
-        done
-        if [[ "${found}" -eq 0 ]]; then
-            warn "no installation found: no certim or ctnode in /usr/local/bin"
         fi
         ;;
     *)

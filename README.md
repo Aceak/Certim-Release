@@ -82,7 +82,7 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/Aceak/Certim-Rel
   | sudo bash -s -- certim --mirror
 ```
 
-`certim` 可替换为 `ctnode` 或 `all`。
+`certim` 可替换为 `ctnode`。
 
 #### 本地脚本安装
 
@@ -92,20 +92,15 @@ sudo ./install.sh certim
 
 # 安装 ctnode
 sudo ./install.sh ctnode
-
-# 同时安装
-sudo ./install.sh all
 ```
 
-安装脚本自动从 GitHub Releases 下载对应架构的二进制，校验 SHA-256 后安装
-到 `/usr/local/bin`，并复制配置示例和 systemd 单元。
+安装脚本自动从 GitHub Releases 下载对应架构的二进制（始终为最新版本），
+校验 SHA-256 后安装到 `/usr/local/bin`，并复制配置示例和 systemd 单元。
+在线安装（curl | bash）时配置文件与 systemd 单元会从仓库自动下载。
 
 下载默认直连官方 GitHub，可选参数：
 
 ```bash
-# 指定发布版本（默认 latest）
-sudo ./install.sh all --version v1.2.3
-
 # 启用默认镜像 https://ghfast.top 加速
 sudo ./install.sh certim --mirror
 
@@ -118,14 +113,13 @@ sudo ./install.sh certim --mirror https://mirror.example.com
 ### 卸载
 
 ```bash
-# 卸载本机已安装的组件（自动检测 certim 或 ctnode）
+# 卸载本机已安装的组件（自动检测 certim 或 ctnode），保留数据与配置目录
 sudo ./install.sh uninstall
 
 # 同时清除数据与配置目录（/var/lib/*、/etc/certim、/etc/ctnode 等）
-sudo ./install.sh uninstall --purge
+# 并清理早期版本创建的系统用户
+sudo ./install.sh purge
 ```
-
-不带 `--purge` 时保留数据与配置目录，便于重装后继续使用。
 
 ## 配置说明
 
