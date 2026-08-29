@@ -9,7 +9,8 @@ Certim 服务端和 ctnode Agent。
 ```text
 Release/
 ├── README.md                        # 本文件
-├── install.sh                       # 一键安装/卸载脚本
+├── install.sh                       # 一键安装/卸载/升级脚本
+├── compatibility.conf               # 升级兼容性规则
 ├── configs/
 │   ├── certim.example.yaml          # certim 服务端配置示例
 │   └── ctnode.example.yaml          # ctnode Agent 配置示例
@@ -120,6 +121,49 @@ sudo ./install.sh uninstall
 # 并清理早期版本创建的系统用户
 sudo ./install.sh purge
 ```
+
+### 升级
+
+```bash
+# 升级本机已安装的全部组件（自动检测 certim / ctnode）
+sudo ./install.sh upgrade
+
+# 只升级 certim
+sudo ./install.sh upgrade certim
+
+# 在线升级（国内网络使用镜像）
+curl -fsSL https://raw.githubusercontent.com/Aceak/Certim-Release/main/install.sh \
+  | sudo bash -s -- upgrade --mirror
+```
+
+升级到最新发布版本，流程为：
+
+1. 先做兼容性检查（见下文「兼容性规则」），不满足的规则会在写入任何文件之前阻断；
+2. 备份当前二进制到 `/usr/local/bin/<name>.old`；
+3. 替换二进制并刷新 systemd 单元；
+4. 服务处于运行状态时自动重启以加载新二进制，否则保持停止。
+
+配置与数据目录保持不变；SQLite 结构迁移由新版二进制首次启动时自动完成，
+无需人工干预。已是最新版本时直接跳过。升级失败时可手动回滚：
+
+```bash
+sudo cp /usr/local/bin/certim.old /usr/local/bin/certim
+sudo systemctl restart certim
+```
+
+### 兼容性规则
+
+升级兼容性约束独立维护在 [compatibility.conf](compatibility.conf) 中，无需修改
+脚本即可追加规则。`upgrade` 在执行任何写入之前读取该文件：本地执行时直接读取，
+在线执行（curl | bash）时从 main 分支下载；下载失败时告警并跳过兼容性检查。
+
+三种规则：
+
+| 规则 | 作用 | 不满足时 |
+|------|------|----------|
+| `requires` | 升级某组件到某版本区间要求本机另一组件满足版本约束 | 阻断；依赖组件未安装时仅提示 |
+| `step` | 低于某版本的组件不能直接升级到目标版本，须分两步 | 阻断 |
+| `matrix` | 同机两个组件版本落入声明的不兼容区间 | 告警，不阻断 |
 
 ## 配置说明
 

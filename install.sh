@@ -23,12 +23,17 @@ usage() {
     cat <<EOF
 Usage:
   ${SCRIPT_NAME} certim|ctnode [--mirror [URL]]
+  ${SCRIPT_NAME} upgrade [certim|ctnode] [--mirror [URL]]
   ${SCRIPT_NAME} uninstall
   ${SCRIPT_NAME} purge
 
 Components:
   certim       - install the certim server
   ctnode       - install the ctnode agent
+
+Upgrade:
+  upgrade       - upgrade all installed components to the latest release
+  upgrade NAME  - upgrade certim or ctnode only
 
 Uninstall:
   uninstall    - remove installed components (auto-detected)
@@ -41,7 +46,7 @@ Options:
 
 Online install:
   curl -fsSL https://raw.githubusercontent.com/Aceak/Certim-Release/main/install.sh \\
-    | sudo bash -s -- certim|ctnode [--mirror]
+    | sudo bash -s -- certim|ctnode|upgrade [--mirror]
 EOF
 }
 
@@ -49,6 +54,10 @@ RELEASE_REPO="Aceak/Certim-Release"
 VERSION="latest"   # 固定安装最新发布版本
 MIRROR=""          # 空 = 直连官方 GitHub
 PURGE=0            # 卸载时是否同时清除数据与配置目录
+
+UPGRADE_COMPONENT=""  # upgrade 时可选指定的组件;空 = 自动检测已安装组件
+COMPAT_FILE=""        # 兼容性规则文件路径;空 = 不可用(跳过兼容性检查)
+BIN_PATH=""           # download_binary 下载的二进制路径(见 download_binary)
 
 COMPONENT="${1:-}"
 if [[ "${COMPONENT}" == "-h" || "${COMPONENT}" == "--help" ]]; then
@@ -63,9 +72,14 @@ fi
 if [[ $# -gt 0 ]]; then
     shift
 fi
+# upgrade 允许可选的组件参数: install.sh upgrade [certim|ctnode] [--mirror [URL]]
+if [[ "${COMPONENT}" == "upgrade" && $# -gt 0 && "$1" != -* ]]; then
+    UPGRADE_COMPONENT="$1"
+    shift
+fi
 
 if [[ $EUID -ne 0 ]]; then
-    err "must run as root: sudo ${SCRIPT_NAME} certim|ctnode [--mirror [URL]]"
+    err "must run as root: sudo ${SCRIPT_NAME} certim|ctnode|upgrade [--mirror [URL]]"
 fi
 
 while [[ $# -gt 0 ]]; do
@@ -109,7 +123,9 @@ TMP_DIR=""
 ensure_tmp_dir() {
     if [[ -z "${TMP_DIR}" ]]; then
         TMP_DIR="$(mktemp -d)"
-        trap 'rm -rf "${TMP_DIR}"' EXIT
+        # 命令替换等子 shell 会继承并执行 EXIT trap;用 BASHPID 守卫
+        # 确保只有主进程退出时才清理临时目录
+        trap '[[ "${BASHPID}" == "$$" ]] && rm -rf "${TMP_DIR}"' EXIT
     fi
 }
 
@@ -210,7 +226,242 @@ download_binary() {
         err "binary cannot execute: ${file}, download may be corrupted or incompatible"
     fi
 
-    echo "${TMP_DIR}/${file}"
+    # 调用方必须以普通调用(而非命令替换)使用本函数: 命令替换子 shell 中
+    # 创建的 TMP_DIR 不会带回父 shell, 且子 shell 退出时可能触发 trap 清理。
+    # 路径同时写入全局变量 BIN_PATH, 供调用方读取。
+    BIN_PATH="${TMP_DIR}/${file}"
+    echo "${BIN_PATH}"
+}
+
+# 从 "<name> vX.Y.Z" 形式输出中提取版本号, 输出无 v 前缀的版本;不可解析时输出 unknown
+parse_version() {
+    local out="$1"
+    if [[ "${out}" =~ ^[A-Za-z0-9_-]+[[:space:]]+v?([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "unknown"
+    fi
+}
+
+# 读取已安装二进制的版本号;二进制缺失时返回非零
+installed_version() {
+    local name="$1" out
+    [[ -x "/usr/local/bin/${name}" ]] || return 1
+    out="$("/usr/local/bin/${name}" version 2>/dev/null || true)"
+    parse_version "${out}"
+}
+
+# 语义化版本比较: 输出 -1(a<b) / 0(a=b) / 1(a>b)。
+# 预发布版本(-suffix)低于对应正式版, 预发布标识之间按字符串序比较。
+ver_cmp() {
+    awk -v x="$1" -v y="$2" '
+        function splitver(v, a,    p, n, i, pre) {
+            # 先取出预发布标识再 split: split() 会清空数组, 先写入 a[4] 会丢失
+            pre = ""
+            p = index(v, "-")
+            if (p > 0) {
+                pre = substr(v, p + 1)
+                v = substr(v, 1, p - 1)
+            }
+            n = split(v, a, "\\.")
+            for (i = n + 1; i <= 3; i++) { a[i] = 0 }
+            for (i = 1; i <= 3; i++) { a[i] = (a[i] ~ /^[0-9]+$/) ? a[i] + 0 : 0 }
+            a[4] = pre
+        }
+        BEGIN {
+            splitver(x, A)
+            splitver(y, B)
+            for (i = 1; i <= 3; i++) {
+                if (A[i] > B[i]) { print 1; exit }
+                if (A[i] < B[i]) { print -1; exit }
+            }
+            if (A[4] == B[4]) { print 0; exit }
+            if (A[4] == "")   { print 1; exit }
+            if (B[4] == "")   { print -1; exit }
+            if (A[4] > B[4])  { print 1; exit }
+            print -1
+        }'
+}
+
+# 判断 version 是否满足约束算子(>= <= == > <);version 为 unknown 时返回 2(无法判断)
+version_match() {
+    local version="$1" op="$2" target="$3" cmp
+    [[ "${version}" != "unknown" ]] || return 2
+    cmp="$(ver_cmp "${version}" "${target}")"
+    case "${op}" in
+        ">=") [[ "${cmp}" -ge 0 ]] ;;
+        ">")  [[ "${cmp}" -gt 0 ]] ;;
+        "<=") [[ "${cmp}" -le 0 ]] ;;
+        "<")  [[ "${cmp}" -lt 0 ]] ;;
+        "==") [[ "${cmp}" -eq 0 ]] ;;
+        *)    return 2 ;;
+    esac
+}
+
+# 兼容性规则文件: 本地仓库存在则直接使用;在线安装时从 main 分支下载。
+# 下载失败 fail-open: 告警后跳过兼容性检查, 升级不因网络波动被卡死。
+ensure_compat_file() {
+    if [[ -f "${SCRIPT_DIR}/compatibility.conf" ]]; then
+        COMPAT_FILE="${SCRIPT_DIR}/compatibility.conf"
+        return 0
+    fi
+    ensure_tmp_dir
+    if download_file "$(resolve_raw_url "compatibility.conf")" "${TMP_DIR}/compatibility.conf"; then
+        COMPAT_FILE="${TMP_DIR}/compatibility.conf"
+        return 0
+    fi
+    COMPAT_FILE=""
+    warn "compatibility.conf unavailable, skipping compatibility checks"
+    return 1
+}
+
+# 依据 compatibility.conf 检查升级兼容性, 必须在任何文件写入之前调用。
+# - requires: 目标版本满足约束时, 本机 <dep> 须满足其约束, 否则阻断;
+#   <dep> 未安装或版本不可解析时无法本机校验, 仅提示。
+# - step: 当前版本低于 via 时不允许直接升级到满足约束的版本, 阻断并提示分两步。
+# - matrix: 两个组件同机且版本分别落入约束区间时告警(不阻断)。
+apply_compat_rules() {
+    local component="$1" from="$2" to="$3"
+    local -a words
+    local kind pkg op target dep dep_op dep_ver via_ver pkg_ver dep_ver_cur
+
+    while read -r -a words; do
+        [[ ${#words[@]} -gt 0 && "${words[0]}" != \#* ]] || continue
+
+        kind="${words[0]}"
+        case "${kind}" in
+            requires|matrix)
+                [[ ${#words[@]} -eq 7 ]] || {
+                    warn "compatibility.conf: malformed ${kind} rule, skipping: ${words[*]}"
+                    continue
+                }
+                pkg="${words[1]}"; op="${words[2]}"; target="${words[3]}"
+                dep="${words[4]}"; dep_op="${words[5]}"; dep_ver="${words[6]}"
+                ;;
+            step)
+                [[ ${#words[@]} -eq 6 && "${words[4]}" == "via" ]] || {
+                    warn "compatibility.conf: malformed step rule, skipping: ${words[*]}"
+                    continue
+                }
+                pkg="${words[1]}"; op="${words[2]}"; target="${words[3]}"
+                via_ver="${words[5]}"
+                ;;
+            *)
+                warn "compatibility.conf: unknown rule kind '${kind}', skipping"
+                continue
+                ;;
+        esac
+
+        # requires/step 只处理与本次升级组件相关、且目标版本落入约束区间的规则
+        if [[ "${kind}" != "matrix" ]]; then
+            [[ "${pkg}" == "${component}" ]] || continue
+            if ! version_match "${to}" "${op}" "${target}"; then
+                continue
+            fi
+        fi
+
+        case "${kind}" in
+            requires)
+                dep_ver_cur="$(installed_version "${dep}" || true)"
+                if [[ -z "${dep_ver_cur}" ]]; then
+                    warn "rule: ${component} ${op} ${target} requires ${dep} ${dep_op} ${dep_ver}"
+                    warn "${dep} is not installed on this host, verify the remote ${dep} version manually"
+                    continue
+                fi
+                if [[ "${dep_ver_cur}" == "unknown" ]]; then
+                    warn "rule: ${component} ${op} ${target} requires ${dep} ${dep_op} ${dep_ver}; installed ${dep} version unknown, proceeding"
+                    continue
+                fi
+                if ! version_match "${dep_ver_cur}" "${dep_op}" "${dep_ver}"; then
+                    err "compatibility check failed: upgrading ${component} to ${to} requires ${dep} ${dep_op} ${dep_ver} (installed: ${dep_ver_cur}); upgrade ${dep} first"
+                fi
+                ;;
+            step)
+                if [[ "${from}" == "unknown" ]]; then
+                    warn "rule: direct upgrade to ${component} ${op} ${target} requires ${via_ver} first; current version unknown, proceeding"
+                    continue
+                fi
+                if [[ "$(ver_cmp "${from}" "${via_ver}")" -lt 0 ]]; then
+                    err "compatibility check failed: cannot upgrade ${component} ${from} directly to ${to}; upgrade to ${via_ver} first"
+                fi
+                ;;
+            matrix)
+                # 两侧版本分别落入约束区间即告警;被升级组件取目标版本, 其余取已装版本
+                if [[ "${pkg}" == "${component}" ]]; then
+                    pkg_ver="${to}"
+                else
+                    pkg_ver="$(installed_version "${pkg}" || true)"
+                fi
+                if [[ "${dep}" == "${component}" ]]; then
+                    dep_ver_cur="${to}"
+                else
+                    dep_ver_cur="$(installed_version "${dep}" || true)"
+                fi
+                [[ -n "${pkg_ver}" && -n "${dep_ver_cur}" ]] || continue
+                if version_match "${pkg_ver}" "${op}" "${target}" &&
+                   version_match "${dep_ver_cur}" "${dep_op}" "${dep_ver}"; then
+                    warn "compatibility matrix: ${pkg} ${pkg_ver} is not compatible with ${dep} ${dep_ver_cur} on this host"
+                fi
+                ;;
+        esac
+    done < "${COMPAT_FILE}"
+}
+
+# 升级单个组件: 版本比较 → 兼容性检查 → 备份替换 → 单元刷新 → 服务重启。
+# 配置与数据目录保持不变;SQLite 迁移由新版二进制首次启动时自动完成。
+upgrade_component() {
+    local name="$1"
+    local from to bin_path cmp
+
+    from="$(installed_version "${name}" || true)"
+    if [[ -z "${from}" ]]; then
+        warn "${name} not found in /usr/local/bin, run: ${SCRIPT_NAME} ${name} to install"
+        return 0
+    fi
+
+    log "upgrading ${name}..."
+    ensure_assets
+    download_binary "${name}" >/dev/null
+    bin_path="${BIN_PATH}"
+    to="$(parse_version "$("${bin_path}" version)")"
+
+    if [[ "${from}" != "unknown" && "${to}" != "unknown" ]]; then
+        cmp="$(ver_cmp "${from}" "${to}")"
+        if [[ "${cmp}" -ge 0 ]]; then
+            log "${name} ${from} is already up to date (latest: ${to}), skipping"
+            return 0
+        fi
+    fi
+
+    # 兼容性检查必须发生在任何文件写入之前
+    if ensure_compat_file; then
+        apply_compat_rules "${name}" "${from}" "${to}"
+    fi
+
+    # 替换前备份旧二进制, 升级失败时可用 <name>.old 手动回滚
+    rm -f "/usr/local/bin/${name}.old"
+    cp -p "/usr/local/bin/${name}" "/usr/local/bin/${name}.old"
+    install -m 0755 "${bin_path}" "/usr/local/bin/${name}"
+    log "${name} ${from} → ${to} (/usr/local/bin/${name})"
+    log "previous binary kept at /usr/local/bin/${name}.old"
+
+    install_unit "${name}"
+
+    # 服务处于运行状态时重启以加载新二进制, 否则保持停止
+    if command -v systemctl &>/dev/null && systemctl is-active "${name}" &>/dev/null 2>&1; then
+        if systemctl restart "${name}"; then
+            log "${name} service restarted"
+        else
+            warn "${name} service failed to restart"
+            warn "restore with: sudo cp /usr/local/bin/${name}.old /usr/local/bin/${name} && sudo systemctl restart ${name}"
+            return 1
+        fi
+    else
+        warn "${name} service is not running, start it with: sudo systemctl start ${name}"
+    fi
+
+    echo ""
+    log "${name} upgraded to ${to}"
 }
 
 # 复制 systemd 单元并重载守护进程，systemctl 不可用时跳过
@@ -237,7 +488,8 @@ install_component() {
 
     log "installing ${name}..."
     ensure_assets
-    bin_path="$(download_binary "${name}")"
+    download_binary "${name}" >/dev/null
+    bin_path="${BIN_PATH}"
 
     install -v -m 0755 "${bin_path}" "/usr/local/bin/${name}"
     log "${name} → /usr/local/bin/${name}"
@@ -312,7 +564,7 @@ uninstall_component() {
     fi
     log "removed systemd unit"
 
-    rm -f "/usr/local/bin/${name}"
+    rm -f "/usr/local/bin/${name}" "/usr/local/bin/${name}.old"
     log "removed /usr/local/bin/${name}"
 
     # certim 的运行目录（tmpfs）随卸载清除
@@ -337,6 +589,29 @@ uninstall_component() {
 case "${COMPONENT}" in
     certim|ctnode)
         install_component "${COMPONENT}"
+        ;;
+    upgrade)
+        if [[ -n "${UPGRADE_COMPONENT}" ]]; then
+            case "${UPGRADE_COMPONENT}" in
+                certim|ctnode) upgrade_component "${UPGRADE_COMPONENT}" ;;
+                *) err "unknown component: ${UPGRADE_COMPONENT}" ;;
+            esac
+        else
+            found=0
+            for component in certim ctnode; do
+                if [[ -x "/usr/local/bin/${component}" ]]; then
+                    if [[ "${found}" -eq 1 ]]; then
+                        echo ""
+                    fi
+                    # 单个组件升级失败不中断其余组件(错误已由 upgrade_component 输出)
+                    upgrade_component "${component}" || true
+                    found=1
+                fi
+            done
+            if [[ "${found}" -eq 0 ]]; then
+                warn "no installation found: nothing to upgrade"
+            fi
+        fi
         ;;
     uninstall)
         if [[ "${PURGE}" -eq 1 ]]; then
