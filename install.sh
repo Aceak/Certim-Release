@@ -165,23 +165,46 @@ resolve_raw_url() {
     fi
 }
 
-# 解析远端最新发布版本号：读取 releases.atom 的第一条 release 条目
-# (atom 按发布时间倒序, 条目标题即 tag, 如 v0.10.0)。解析失败返回非零。
-# 版本号仅用于升级前的预比较与固定版本下载, 下载后仍以二进制自报版本为准。
+# 从 releases/latest 页面解析最新版本号：页面 <head> 的 canonical 链接
+# 指向 /releases/tag/<tag>, 该锚点即使 release 使用自定义标题也存在;
+# 解析失败时回退 <title>Release vX.Y.Z。返回非零表示解析失败。
+resolve_latest_from_page() {
+    local url="https://github.com/${RELEASE_REPO}/releases/latest"
+    local html version
+    [[ -n "${MIRROR}" ]] && url="${MIRROR%/}/${url}"
+
+    if ! html="$(download_file "${url}" - 2>/dev/null)"; then
+        return 1
+    fi
+    version="$(grep -oE 'releases/tag/v[0-9][^"&< ]*' <<<"${html}" | head -1 | sed 's|.*/||')"
+    if [[ -z "${version}" ]]; then
+        version="$(grep -oE '<title>[^<]*' <<<"${html}" | head -1 | grep -oE 'v[0-9][0-9A-Za-z.-]*' | head -1)"
+    fi
+    [[ "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 1
+    echo "${version}"
+}
+
+# 解析远端最新发布版本号：首选 releases/latest 页面(镜像可代理),
+# 失败时回退 releases.atom(部分镜像不代理 atom, 直连可用);均失败
+# 返回非零, 由调用方回退 latest 下载。版本号仅用于升级前的预比较与
+# 固定版本下载, 下载后仍以二进制自报版本为准。
 latest_release_version() {
     local url="https://github.com/${RELEASE_REPO}/releases.atom"
     local xml version
     # install/upgrade 同进程处理多个组件时只查询一次;失败不缓存
     [[ -n "${LATEST_VER}" ]] && { echo "${LATEST_VER}"; return 0; }
-    [[ -n "${MIRROR}" ]] && url="${MIRROR%/}/${url}"
 
-    if ! xml="$(download_file "${url}" - 2>/dev/null)"; then
-        return 1
+    version="$(resolve_latest_from_page || true)"
+    if [[ -z "${version}" ]]; then
+        [[ -n "${MIRROR}" ]] && url="${MIRROR%/}/${url}"
+        if xml="$(download_file "${url}" - 2>/dev/null)"; then
+            # 第一条 <title>vX.Y.Z</title> 即最新版本; release 标题非 tag
+            # 形式时(如自定义标题)匹配不到, 视为解析失败
+            version="$(grep -oE '<title>v[0-9][^<]*</title>' <<<"${xml}" | head -1 | sed 's/<[^>]*>//g')"
+            [[ "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || version=""
+        fi
     fi
-    # 第一条 <title>vX.Y.Z</title> 即最新版本; release 标题非 tag 形式时
-    # (如自定义标题) 匹配不到, 同样视为解析失败由调用方回退。
-    version="$(grep -oE '<title>v[0-9][^<]*</title>' <<<"${xml}" | head -1 | sed 's/<[^>]*>//g')"
-    [[ "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 1
+    [[ -z "${version}" ]] && return 1
     LATEST_VER="${version}"
     echo "${version}"
 }
