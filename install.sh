@@ -22,38 +22,43 @@ SCRIPT_NAME="$(basename "${0}")"
 usage() {
     cat <<EOF
 Usage:
-  ${SCRIPT_NAME} certim|ctnode [--mirror [URL]]
-  ${SCRIPT_NAME} upgrade [certim|ctnode] [--mirror [URL]]
-  ${SCRIPT_NAME} uninstall
-  ${SCRIPT_NAME} purge
+  ${SCRIPT_NAME} <command> [options]
 
-Components:
-  certim       - install the certim server
-  ctnode       - install the ctnode agent
-
-Upgrade:
-  upgrade       - upgrade all installed components to the latest release
-  upgrade NAME  - upgrade certim or ctnode only
-
-Uninstall:
-  uninstall    - remove installed components (auto-detected)
-  purge        - uninstall and also remove data and config directories
+Commands:
+  certim            Install the certim server
+  ctnode            Install the ctnode agent
+  upgrade [NAME]    Upgrade installed components to the latest release;
+                    NAME = certim|ctnode, omitted = upgrade all installed
+  uninstall         Remove installed components (keeps data and config)
+  purge             Uninstall and also delete data and config directories
 
 Options:
-  --mirror     - enable mirror https://ghfast.top (default: official GitHub)
-  --mirror URL - custom mirror prefix
-  -h, --help   - show this help
+  --mirror          Use the ghfast.top GitHub mirror (default: direct GitHub)
+  --mirror-url URL  Use a custom mirror prefix, e.g. https://ghfast.top
+  -h, --help        Show this help
 
-Online install:
-  curl -fsSL https://raw.githubusercontent.com/Aceak/Certim-Release/main/install.sh \\
-    | sudo bash -s -- certim|ctnode|upgrade [--mirror]
+Examples:
+  # From a local checkout of this repository
+  sudo ./${SCRIPT_NAME} certim
+  sudo ./${SCRIPT_NAME} upgrade --mirror
+
+  # Online (curl | bash)
+  curl -fsSL https://raw.githubusercontent.com/${RELEASE_REPO}/main/install.sh \\
+    | sudo bash -s -- ctnode --mirror
+
+  # Upgrade only ctnode via a custom mirror
+  sudo bash ${SCRIPT_NAME} upgrade ctnode --mirror-url https://your-mirror.example.com
+
+Notes:
+  - Must run as root. Binary -> /usr/local/bin, config -> /etc/<name>, data -> /var/lib/<name>
+  - uninstall keeps /etc/<name> and /var/lib/<name>; purge deletes them
 EOF
 }
 
 RELEASE_REPO="Aceak/Certim-Release"
-VERSION="latest"   # 固定安装最新发布版本
 MIRROR=""          # 空 = 直连官方 GitHub
 PURGE=0            # 卸载时是否同时清除数据与配置目录
+LATEST_VER=""      # latest_release_version 的进程内缓存
 
 UPGRADE_COMPONENT=""  # upgrade 时可选指定的组件;空 = 自动检测已安装组件
 COMPAT_FILE=""        # 兼容性规则文件路径;空 = 不可用(跳过兼容性检查)
@@ -79,7 +84,7 @@ if [[ "${COMPONENT}" == "upgrade" && $# -gt 0 && "$1" != -* ]]; then
 fi
 
 if [[ $EUID -ne 0 ]]; then
-    err "must run as root: sudo ${SCRIPT_NAME} certim|ctnode|upgrade [--mirror [URL]]"
+    err "must run as root: sudo ${SCRIPT_NAME} <command> [options]"
 fi
 
 while [[ $# -gt 0 ]]; do
@@ -89,19 +94,21 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         --mirror)
+            # 无值选项: 启用默认镜像;自定义镜像前缀用 --mirror-url
+            MIRROR="https://ghfast.top"
+            ;;
+        --mirror-url)
             shift
-            if [[ $# -ge 1 && -n "$1" && "$1" != -* ]]; then
-                [[ "$1" =~ ^https?:// ]] || err "mirror must start with http:// or https://"
-                MIRROR="$1"
-                shift
-            else
-                MIRROR="https://ghfast.top"
-            fi
+            [[ $# -ge 1 && -n "$1" && "$1" != -* ]] ||
+                err "--mirror-url requires a URL, e.g. --mirror-url https://ghfast.top"
+            [[ "$1" =~ ^https?:// ]] || err "mirror URL must start with http:// or https://"
+            MIRROR="$1"
             ;;
         *)
-            err "unknown option: $1"
+            err "unknown option: $1 (see --help)"
             ;;
     esac
+    shift
 done
 
 detect_arch() {
@@ -129,14 +136,22 @@ ensure_tmp_dir() {
     fi
 }
 
-# 拼接发布下载 URL：可选镜像前缀 + GitHub Releases 地址
+# 拼接发布下载 URL：可选镜像前缀 + GitHub Releases 地址。
+# <version> 为 latest 时走 /releases/latest/download(302 跳转到最新版本);
+# 为具体 tag(如 v0.10.0)时走版本化地址, 二进制与 checksums.txt 取自
+# 同一版本, 不会出现两次请求解析到不同版本导致的校验误报。
 resolve_download_url() {
-    local file="$1"
-    local base="https://github.com/${RELEASE_REPO}/releases"
-    if [[ -n "${MIRROR}" ]]; then
-        echo "${MIRROR%/}/${base}/${VERSION}/download/${file}"
+    local file="$1" version="${2:-latest}"
+    local path="https://github.com/${RELEASE_REPO}/releases"
+    if [[ "${version}" == "latest" ]]; then
+        path="${path}/latest/download/${file}"
     else
-        echo "${base}/${VERSION}/download/${file}"
+        path="${path}/download/${version}/${file}"
+    fi
+    if [[ -n "${MIRROR}" ]]; then
+        echo "${MIRROR%/}/${path}"
+    else
+        echo "${path}"
     fi
 }
 
@@ -150,7 +165,28 @@ resolve_raw_url() {
     fi
 }
 
-# 下载文件，失败时返回非零
+# 解析远端最新发布版本号：读取 releases.atom 的第一条 release 条目
+# (atom 按发布时间倒序, 条目标题即 tag, 如 v0.10.0)。解析失败返回非零。
+# 版本号仅用于升级前的预比较与固定版本下载, 下载后仍以二进制自报版本为准。
+latest_release_version() {
+    local url="https://github.com/${RELEASE_REPO}/releases.atom"
+    local xml version
+    # install/upgrade 同进程处理多个组件时只查询一次;失败不缓存
+    [[ -n "${LATEST_VER}" ]] && { echo "${LATEST_VER}"; return 0; }
+    [[ -n "${MIRROR}" ]] && url="${MIRROR%/}/${url}"
+
+    if ! xml="$(download_file "${url}" - 2>/dev/null)"; then
+        return 1
+    fi
+    # 第一条 <title>vX.Y.Z</title> 即最新版本; release 标题非 tag 形式时
+    # (如自定义标题) 匹配不到, 同样视为解析失败由调用方回退。
+    version="$(grep -oE '<title>v[0-9][^<]*</title>' <<<"${xml}" | head -1 | sed 's/<[^>]*>//g')"
+    [[ "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 1
+    LATEST_VER="${version}"
+    echo "${version}"
+}
+
+# 下载文件，失败时返回非零；dest 为 "-" 时输出到标准输出。
 download_file() {
     local url="$1"
     local dest="$2"
@@ -164,25 +200,50 @@ download_file() {
     fi
 }
 
-# 本地仓库目录存在时直接使用；在线安装（curl | bash）时从 main 分支下载。
+# 按需准备部署资产。本地仓库执行(install.sh 位于仓库目录旁)时直接使用
+# 仓库内的 configs/ 与 systemd/;在线执行(curl | bash)时从 main 分支下载
+# 到临时目录, 同一进程内已下载的文件不重复下载。临时目录在退出时清理,
+# 因此每次在线运行都会重新下载本次用到的资产, 但不下载用不到的文件。
+# usage: ensure_assets install          # 全部资产(安装用)
+#        ensure_assets upgrade <name>   # 仅 <name>.service(升级用)
 ensure_assets() {
-    if [[ -d "${CONFIG_DIR}" && -d "${SYSTEMD_DIR}" ]]; then
-        return 0
-    fi
+    local mode="$1" component="${2:-}"
+    local -a assets
+    local src url all_local=1 downloading=0
 
+    case "${mode}" in
+        install)
+            assets=(
+                configs/certim.example.yaml
+                configs/ctnode.example.yaml
+                systemd/certim.service
+                systemd/ctnode.service
+            )
+            ;;
+        upgrade)
+            assets=("systemd/${component}.service")
+            ;;
+        *) err "ensure_assets: unknown mode '${mode}'" ;;
+    esac
+
+    # 本地仓库执行时所需资产齐备, 无需下载
+    for src in "${assets[@]}"; do
+        [[ -f "${SCRIPT_DIR}/${src}" ]] || { all_local=0; break; }
+    done
+    [[ "${all_local}" -eq 1 ]] && return 0
+
+    # 在线执行(curl | bash): 按需下载缺失资产到临时目录
     ensure_tmp_dir
     CONFIG_DIR="${TMP_DIR}/configs"
     SYSTEMD_DIR="${TMP_DIR}/systemd"
     mkdir -p "${CONFIG_DIR}" "${SYSTEMD_DIR}"
 
-    log "configs/systemd not found locally, downloading deployment assets..."
-    local src url
-    for src in \
-        configs/certim.example.yaml \
-        configs/ctnode.example.yaml \
-        systemd/certim.service \
-        systemd/ctnode.service
-    do
+    for src in "${assets[@]}"; do
+        [[ -f "${TMP_DIR}/${src}" ]] && continue
+        if [[ "${downloading}" -eq 0 ]]; then
+            log "downloading deployment assets from ${RELEASE_REPO}..."
+            downloading=1
+        fi
         url="$(resolve_raw_url "${src}")"
         if ! download_file "${url}" "${TMP_DIR}/${src}"; then
             err "failed to download asset: ${src}, try another mirror: --mirror <URL>"
@@ -191,18 +252,21 @@ ensure_assets() {
     done
 }
 
-# 下载对应架构的二进制，校验 SHA-256 并验证可执行，返回本地文件路径
+# 下载对应架构的二进制，校验 SHA-256 并验证可执行，返回本地文件路径。
+# <version> 为具体发布 tag(如 v0.10.0)时二进制与 checksums.txt 均取自
+# 同一版本, 不会出现两次请求解析到不同版本导致的校验误报;缺省 latest
+# 时走 GitHub 重定向。
 download_binary() {
-    local component="$1"
+    local component="$1" version="${2:-latest}"
     local file="${component}-linux-${ARCH}"
     local url checksum_url
 
     ensure_tmp_dir
 
-    url="$(resolve_download_url "${file}")"
-    checksum_url="$(resolve_download_url "checksums.txt")"
+    url="$(resolve_download_url "${file}" "${version}")"
+    checksum_url="$(resolve_download_url "checksums.txt" "${version}")"
 
-    log "downloading ${file} (${VERSION})"
+    log "downloading ${file} (${version})"
     log "URL: ${url}"
     if ! download_file "${url}" "${TMP_DIR}/${file}"; then
         err "download failed: ${file}, try another mirror: --mirror <URL>"
@@ -411,7 +475,7 @@ apply_compat_rules() {
 # 配置与数据目录保持不变;SQLite 迁移由新版二进制首次启动时自动完成。
 upgrade_component() {
     local name="$1"
-    local from to bin_path cmp
+    local from to remote_ver cmp bin_path
 
     from="$(installed_version "${name}" || true)"
     if [[ -z "${from}" ]]; then
@@ -420,9 +484,27 @@ upgrade_component() {
     fi
 
     log "upgrading ${name}..."
-    ensure_assets
-    download_binary "${name}" >/dev/null
+
+    # 先解析远端最新版本号: 已是最新时跳过整个下载(约 20MB)。
+    # 解析失败时回退 latest 下载, 版本比较推迟到下载完成后进行。
+    remote_ver="$(latest_release_version || true)"
+    if [[ -n "${remote_ver}" ]]; then
+        if [[ "${from}" != "unknown" ]]; then
+            cmp="$(ver_cmp "${from}" "${remote_ver#v}")"
+            if [[ "${cmp}" -ge 0 ]]; then
+                log "${name} ${from} is already up to date (latest: ${remote_ver#v}), skipping"
+                return 0
+            fi
+        fi
+    else
+        warn "failed to resolve latest release version, falling back to 'latest' download"
+    fi
+
+    ensure_assets upgrade "${name}"
+    download_binary "${name}" "${remote_ver:-latest}" >/dev/null
     bin_path="${BIN_PATH}"
+    # 下载完成后以二进制自报版本为准: latest 回退路径没有先验版本,
+    # atom 解析出的版本号只用于预比较。
     to="$(parse_version "$("${bin_path}" version)")"
 
     if [[ "${from}" != "unknown" && "${to}" != "unknown" ]]; then
@@ -487,8 +569,10 @@ install_component() {
     [[ "${name}" == "ctnode" ]] && config_hint=" and set server.url"
 
     log "installing ${name}..."
-    ensure_assets
-    download_binary "${name}" >/dev/null
+    ensure_assets install
+    # 优先按解析出的版本号做固定版本下载(与 checksums 同版本);
+    # 解析失败时静默回退 latest 下载, 版本不影响安装流程。
+    download_binary "${name}" "$(latest_release_version || true)" >/dev/null
     bin_path="${BIN_PATH}"
 
     install -v -m 0755 "${bin_path}" "/usr/local/bin/${name}"
@@ -533,7 +617,7 @@ install_component() {
             ;;
         ctnode)
             log "ctnode installed. Enroll and start:"
-            echo "  sudo ctnode enroll --token ctm_enroll_xxx --config /etc/ctnode/config.yaml"
+            echo "  sudo ctnode enroll --url <server-url> --token <token> --config /etc/ctnode/config.yaml"
             echo "  sudo systemctl enable --now ctnode"
             echo "  ctnode status --config /etc/ctnode/config.yaml"
             ;;
@@ -550,11 +634,11 @@ uninstall_component() {
 
     log "uninstalling ${name}..."
 
-    if systemctl is-active "${name}" &>/dev/null 2>&1; then
+    if command -v systemctl &>/dev/null && systemctl is-active "${name}" &>/dev/null 2>&1; then
         systemctl stop "${name}" || true
         log "stopped ${name} service"
     fi
-    if systemctl is-enabled "${name}" &>/dev/null 2>&1; then
+    if command -v systemctl &>/dev/null && systemctl is-enabled "${name}" &>/dev/null 2>&1; then
         systemctl disable "${name}" || true
         log "disabled ${name} service"
     fi
@@ -598,18 +682,26 @@ case "${COMPONENT}" in
             esac
         else
             found=0
+            failed=0
             for component in certim ctnode; do
                 if [[ -x "/usr/local/bin/${component}" ]]; then
                     if [[ "${found}" -eq 1 ]]; then
                         echo ""
                     fi
-                    # 单个组件升级失败不中断其余组件(错误已由 upgrade_component 输出)
-                    upgrade_component "${component}" || true
+                    # 单个组件升级失败不中断其余组件, 最终以非零退出码报告
+                    if ! upgrade_component "${component}"; then
+                        failed=1
+                    fi
                     found=1
+                elif [[ "${found}" -eq 1 ]]; then
+                    # 至少有一个组件已安装时, 提示其余组件的缺失
+                    warn "${component} not found in /usr/local/bin, skipping"
                 fi
             done
             if [[ "${found}" -eq 0 ]]; then
                 warn "no installation found: nothing to upgrade"
+            elif [[ "${failed}" -eq 1 ]]; then
+                err "one or more components failed to upgrade, check the output above"
             fi
         fi
         ;;

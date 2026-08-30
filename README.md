@@ -57,10 +57,10 @@ sudo chmod 0755 /usr/local/bin/ctnode
 # 配置
 sudo mkdir -p /etc/ctnode /var/lib/ctnode /etc/certim/certificates
 sudo cp configs/ctnode.example.yaml /etc/ctnode/config.yaml
-# 编辑 /etc/ctnode/config.yaml 填写 Server URL 和身份密钥路径
+# 模板不含 Server URL:注册时由 enroll --url 写入,无需手动编辑
 
 # 注册并启动
-sudo ctnode enroll --token ctm_enroll_xxx --config /etc/ctnode/config.yaml
+sudo ctnode enroll --url https://certim.example.com --token ctm_xxx --config /etc/ctnode/config.yaml
 sudo cp systemd/ctnode.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now ctnode

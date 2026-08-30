@@ -3,7 +3,7 @@
 # 安装：
 #   sudo install -m 0644 systemd/ctnode.service /etc/systemd/system/ctnode.service
 #   sudo systemctl daemon-reload
-#   sudo ctnode enroll --token ctm_enroll_xxx --config /etc/ctnode/config.yaml
+#   sudo ctnode enroll --url https://certim.example.com --token ctm_xxx --config /etc/ctnode/config.yaml
 #   sudo systemctl enable --now ctnode
 #
 # 单元创建并管理 /var/lib/ctnode（StateDirectory），其中保存 Ed25519 身份
