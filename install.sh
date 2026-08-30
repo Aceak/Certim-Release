@@ -716,10 +716,9 @@ case "${COMPONENT}" in
                         failed=1
                     fi
                     found=1
-                elif [[ "${found}" -eq 1 ]]; then
-                    # 至少有一个组件已安装时, 提示其余组件的缺失
-                    warn "${component} not found in /usr/local/bin, skipping"
                 fi
+                # 未安装的组件静默跳过: 单组件主机是常态, 不产生噪音;
+                # 两个组件均未安装时由下方统一提示。
             done
             if [[ "${found}" -eq 0 ]]; then
                 warn "no installation found: nothing to upgrade"
