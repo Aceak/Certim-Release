@@ -9,6 +9,11 @@
 # 单元创建并管理 /var/lib/ctnode（StateDirectory），其中保存 Ed25519 身份
 # 密钥和本地 Agent 状态。已部署证书写入 /etc/certim/certificates
 # （下方 ReadWritePaths）。
+#
+# check Hook（示例配置中的 nginx -t）作为 ctnode 的子进程运行，共享其 mount
+# namespace：ProtectSystem=strict 下除下方列出的路径外整个文件系统只读。
+# nginx 即使仅做配置测试也会打开 error log，因此 /var/log/nginx 必须保持可写，
+# 否则每次部署批次都会因 "Read-only file system" 而检查失败。
 
 [Unit]
 Description=Certim node certificate agent
@@ -28,7 +33,7 @@ User=root
 Group=root
 
 StateDirectory=ctnode
-ReadWritePaths=/etc/certim/certificates
+ReadWritePaths=/etc/certim/certificates -/var/log/nginx
 
 # 安全加固。仅当特定部署需要时才放宽。
 NoNewPrivileges=true
