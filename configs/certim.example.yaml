@@ -23,15 +23,30 @@ server:
   # 子目录和文件由 certim 管理，首次启动自动创建。
   data_dir: "/var/lib/certim"
 
+  # ---- 证书落盘目录 ----
+  # 签发后的证书固定写入 <目录>/<证书名>/，续期直接覆盖。
+  certificates_dir: "/etc/certim/.certificates"
+
   # ---- 凭据目录 ----
   # ACME 账户密钥、DNS Provider 凭据等敏感文件的存储目录。
   # 权限收紧为 0700，每个凭据文件为 0600。
   credentials_dir: "/etc/certim/.credentials"
 
   # ---- 真实 IP ----
-  # 反向代理必须将此 Header 覆盖为单个客户端 IP。
-  # 逗号分隔的转发链会被拒绝并回退到 TCP 对端 IP。
+  # 携带客户端 IP 链的 Header，由可信反向代理追加（nginx 用
+  # $proxy_add_x_forwarded_for），不要覆盖为单个 $remote_addr。
   real_ip_header: "X-Forwarded-For"
+
+  # ---- 可信代理 ----
+  # 仅当 TCP 直连对端属于这些网段时才信任上面的 Header，并从最近一跳起取
+  # 链上第一个非可信地址。只列代理机器本身（如 10.0.0.5/32），切勿把包含
+  # 客户端或 Agent 的网段（如整个 LAN）列入，否则伪造的头值会生效。
+  # 显式空列表 [] 表示永不信任；写空值/null 等同于不配置，会回落到回环网段。
+  trusted_proxies: ["127.0.0.0/8", "::1/128"]
+
+  # ---- 访问日志 ----
+  # HTTP 访问日志，与运行日志（stdout/journal）分开。目录在启动时创建。
+  access_log: "/var/log/certim/access.log"
 
   # ---- 对外地址（可选）----
   # Agent API 的公网 HTTPS 地址。配置后 'certim enrollment create'

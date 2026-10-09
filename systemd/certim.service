@@ -25,8 +25,11 @@ RestartSec=5
 User=root
 Group=root
 
-# 服务端写入 SQLite、不可变证书发布和 .credentials，其余保持只读。
+# 服务端写入 SQLite、不可变证书发布、.credentials 与 HTTP 访问日志
+# （/var/log/certim/access.log），其余保持只读。
 StateDirectory=certim
+LogsDirectory=certim
+LogsDirectoryMode=0750
 RuntimeDirectory=certim
 RuntimeDirectoryMode=0750
 ReadWritePaths=/etc/certim

@@ -179,8 +179,11 @@ Storage Profile 和证书通过本地 CLI 动态管理，存储在 SQLite 中。
 |--------|--------|------|
 | `server.listen` | `127.0.0.1:9080` | Agent API 监听地址，建议置于反向代理之后 |
 | `server.control_socket` | `/run/certim/certim.sock` | 本地管理 CLI 的 Unix Socket |
-| `server.data_dir` | `/var/lib/certim` | SQLite 和证书本地存储 |
+| `server.data_dir` | `/var/lib/certim` | SQLite、证书版本历史与审计日志 |
+| `server.certificates_dir` | `/etc/certim/.certificates` | 证书固定落盘目录，续期直接覆盖 |
 | `server.credentials_dir` | `/etc/certim/.credentials` | Profile 凭据目录（0700） |
+| `server.trusted_proxies` | 回环网段 | 信任 `X-Forwarded-For` 的反向代理地址，见「Agent API 反向代理」 |
+| `server.access_log` | `/var/log/certim/access.log` | HTTP 访问日志，与运行日志（journal）分开 |
 | `acme.renew_before` | `30d` | 证书到期前多少天触发续期 |
 | `acme.check_interval` | `7d` | 续期状态检查间隔 |
 
@@ -226,9 +229,16 @@ journalctl -u ctnode -f
 
 生产环境建议在 HTTPS 反向代理后暴露 Agent API，参考
 [nginx/nginx-certim.example.conf](nginx/nginx-certim.example.conf)。
-反向代理必须把 `X-Forwarded-For` 覆盖为单个客户端 IP——逗号分隔的转发链会被
-拒绝并回退到 TCP 对端地址。OSS 预签名 URL 由 Agent 直接访问阿里云 OSS，
-不经过代理。
+
+代理必须把**直连客户端地址追加**到 `X-Forwarded-For` 链尾（nginx 用
+`$proxy_add_x_forwarded_for`），而不是覆盖成 `$remote_addr`。服务端仅在 TCP
+直连对端属于 `server.trusted_proxies`（默认回环网段）时才信任该头，并从最近
+一跳起取链上第一个非可信地址作为真实客户端；其余来源一律使用 TCP 对端地址。
+nginx 不在本机时需把**代理机器的地址**加入 `trusted_proxies`（如 `10.0.0.5/32`）。
+**切勿**把包含客户端或 Agent 的网段（如整个 LAN）列入，否则伪造的头值会生效；
+配置为显式空列表 `[]` 则永不信任该头。
+
+OSS 预签名 URL 由 Agent 直接访问阿里云 OSS，不经过代理。
 
 ## 目录权限
 
@@ -237,6 +247,7 @@ journalctl -u ctnode -f
 | `/etc/certim/` | `0755` | certim 配置目录 |
 | `/etc/certim/.credentials/` | `0700` | Profile 凭据目录 |
 | `/var/lib/certim/` | `0755` | certim 数据目录（systemd StateDirectory 创建） |
+| `/var/log/certim/` | `0750` | HTTP 访问日志目录（systemd LogsDirectory 创建） |
 | `/run/certim/` | `0750` | Unix Socket 目录（tmpfs） |
 | `/etc/ctnode/` | `0755` | ctnode 配置目录 |
 | `/var/lib/ctnode/` | `0755` | ctnode 身份密钥目录（systemd StateDirectory 创建） |
