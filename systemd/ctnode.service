@@ -33,6 +33,8 @@ User=root
 Group=root
 
 StateDirectory=ctnode
+# storage.link_dirs 未列入此处：若启用，需把每个目标目录加到下面，否则建链
+# 会因 EROFS 失败，证书照常部署但链接缺失。
 ReadWritePaths=/etc/certim/certificates -/var/log/nginx
 
 # 安全加固。仅当特定部署需要时才放宽。

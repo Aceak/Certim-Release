@@ -69,6 +69,30 @@ sudo systemctl enable --now ctnode
 ctnode status --config /etc/ctnode/config.yaml
 ```
 
+### 让服务读到证书
+
+Agent 把证书部署到 `/etc/certim/certificates/<证书名>/`。服务若要求从自己的路径
+读取（如 nginx 的 `/etc/nginx/ssl/<证书名>/`），配置符号链接目录即可：
+
+```yaml
+storage:
+  link_dirs: ["/etc/nginx/ssl"]
+```
+
+链接指向目录而非文件，只在首次部署时建立，续期的原子替换不会影响它。已存在但
+指向别处的链接会被拒绝而不是覆盖。
+
+使用本仓库的 `systemd/ctnode.service` 时，`ProtectSystem=strict` 下需把每个
+`link_dirs` 目标目录加进该单元的 `ReadWritePaths`，否则建链会因 EROFS 失败
+（证书照常部署，链接缺失并在日志中 warning）。
+
+查看本机证书与版本：
+
+```bash
+sudo ctnode certs              # 本机已部署的证书
+sudo ctnode certs --remote     # 叠加服务端授权的版本，两侧差异一眼可见
+```
+
 ### 一键安装
 
 #### 在线安装
@@ -202,6 +226,7 @@ Agent 自动发现已获授权的证书，无需在配置中逐个填写域名�
 | `poll.interval` | `7d` | 证书版本轮询间隔 |
 | `poll.jitter` | `10%` | 轮询随机偏移，避免惊群 |
 | `storage.root` | `/etc/certim/certificates` | 证书部署根目录 |
+| `storage.link_dirs` | 空 | 在这些目录下为每张证书建立同名符号链接，指向部署目录 |
 | `storage.outputs.split` | `false` | 额外生成 certificate.pem 和 chain.pem |
 | `storage.outputs.pfx` | `false` | 额外生成 PFX/P12 和随机密码 |
 | `deploy.check` | `["nginx", "-t"]` | 部署后配置检查命令 |
