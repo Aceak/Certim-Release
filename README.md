@@ -282,7 +282,9 @@ cd bin && sha256sum -c ../checksums.txt
 
 - certim 服务端和 Agent API 之间的 TLS 必须启用。
 - Agent API 应置于 HTTPS 反向代理之后，由防火墙限制来源 IP。
-- `insecure_skip_verify` 仅用于受控测试环境。
+- `insecure_skip_verify` 仅用于受控测试环境。`ctnode` 的 `enroll`、`sync`、
+  `status`、`check` 也接受 `-k`/`--insecure`，可对单次命令跳过服务端证书验证，
+  不写入配置。
 - Enrollment Token 只在创建时显示一次，请妥善保存。
 - 私钥和凭据文件的系统权限必须限制。
 
